@@ -1,0 +1,7 @@
+# Copy to config.local.toml (git-ignored) and fill in. Anything here overrides config.toml.
+[eflow]
+url = "https://prod-00.eastus.logic.azure.com/workflows/.../triggers/manual/paths/invoke?api-version=2016-06-01&sp=...&sig=..."
+method = "GET"          # or "POST"
+# headers = { "x-api-key" = "..." }
+# body = { since = "2024-01-01" }
+# count_key = "totalCount"   # if the flow reports its own row count, the app checks it

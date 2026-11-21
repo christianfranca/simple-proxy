@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fraction explorer</title>
+<meta name="description" content="Distillation runs by fraction: timeline, process profile, cross-run comparison and datalog coverage.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Host+Grotesk:wght@400;500&family=Atkinson+Hyperlegible+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/uPlot.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<header class="bar">
+  <a class="wordmark" href="/">Fraction explorer</a>
+  <nav class="tabs" aria-label="Views">
+    <a href="?view=runs" data-view="runs">Runs</a>
+    <a href="?view=compare" data-view="compare">Compare</a>
+    <a href="?view=coverage" data-view="coverage">Coverage</a>
+  </nav>
+  <div class="seg" id="colswitch" role="group" aria-label="Column"></div>
+  <span class="spacer"></span>
+  <span class="eflow-status" id="eflow-status"></span>
+  <button class="btn btn--primary" id="eflow-refresh" type="button">Refresh<span class="long"> from Eflow</span></button>
+</header>
+{% if demo %}<div class="notice" role="status">Demo data. Synthetic readings generated on this machine, not from tp_datalog. Start without <span class="measured">--demo</span> for the plant.</div>{% endif %}
+<div id="report" class="report" hidden aria-live="polite"></div>
+<div id="app"><noscript><div class="state"><h3>Scripting is off</h3>This tool draws its tables and charts with JavaScript. Turn it on for 127.0.0.1.</div></noscript></div>
+<script src="{{ url_for('static', filename='vendor/uPlot.iife.min.js') }}"></script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

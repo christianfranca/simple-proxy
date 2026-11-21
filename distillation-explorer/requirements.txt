@@ -1,0 +1,8 @@
+# Python 3.13. pandas and pyodbc are already on the plant machine.
+flask>=3.0
+pandas>=2.2
+numpy>=1.26
+pyodbc>=5.0        # SQL Server access (not needed for --demo)
+openpyxl>=3.1      # Excel export
+tzdata             # time-zone database for Windows (only used if Eflow ever sends zoned dates)
+waitress>=3.0      # optional: a sturdier server than Flask's own for a 24/7 machine
