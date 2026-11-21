@@ -159,3 +159,19 @@ def test_refresh_reports_changes(tmp_path):
     rep = refresh(CFG, store, {"eflowData": b, "success": True})
     assert len(rep["added"]) == 1 and len(rep["removed"]) == 1 and len(rep["changed"]) == 1
     assert any("DROPPED" in w for w in rep["warnings"]) is False  # 2 -> 2 rows
+
+
+def test_venting_in_last_fraction_is_not_an_excursion():
+    import pandas as pd
+    vac = CD02.by_role("vacuum")
+    ts = pd.date_range("2026-07-31 03:45", periods=720, freq="10s")       # 2 h
+    v = np.full(len(ts), 12.73)
+    v[300:320] = 30.0                                                   # a real leak mid-cut
+    v[-60:] = np.linspace(100, 1015, 60)                                # vented in the last 10 min
+    df = pd.DataFrame({"ts": ts, "tag": vac.tag, "val": v, "backfilled": False})
+    win = an.Window(df, CD02, ts[0], ts[-1] + pd.Timedelta(seconds=10), 120)
+    last = an.fraction_metrics(win, CFG.metrics, is_last=True)
+    mid = an.fraction_metrics(win, CFG.metrics, is_last=False)
+    assert last["vac_excursions"] == 1 and last["vac_vented_at_min"] == pytest.approx(110)
+    assert last["vac_max"] < 100                    # stats stop where the venting starts
+    assert mid["vac_excursions"] == 2 and mid["vac_vented_at_min"] is None

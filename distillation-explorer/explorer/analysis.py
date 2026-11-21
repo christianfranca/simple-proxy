@@ -289,10 +289,49 @@ def robust_sd(v) -> float:
     return float(1.4826 * np.median(np.abs(v - np.median(v))))
 
 
-METRICS_VERSION = 2   # bump when a metric's definition changes; cached rows recompute
+def vacuum_events(win: "Window", metric_cfg: dict, is_last: bool = False) -> dict | None:
+    """Excursion events for the column's main vacuum transmitter.
+
+    In the LAST fraction of a run, an excursion upward that runs to the end of
+    the data is the pot being vented to atmosphere so it can be drained: the
+    run is over. It is returned as `vent`, not counted as an excursion, and
+    the median, noise and band are worked out from the data before it.
+    """
+    col = win.column
+    vac = col.by_role("vacuum")
+    t, v, _ = win.series(vac)
+    if vac is None or not len(v):
+        return None
+    k = float(metric_cfg.get("vacuum_band_k", 4))
+    min_s = float(metric_cfg.get("excursion_min_s", 60))
+    merge_s = float(metric_cfg.get("excursion_merge_s", 120))
+
+    def run(tt, vv):
+        med = float(np.median(vv))
+        rsd = robust_sd(vv)
+        # whichever is wider: a fixed floor (sensor resolution and normal
+        # wander) or k x the fraction's own robust noise
+        band = max(col.vacuum_band_abs, col.vacuum_band_rel * abs(med), k * rsd)
+        return med, rsd, band, excursion_events(tt, vv, med, band, win.max_gap, min_s, merge_s)
+
+    med, rsd, band, ev = run(t, v)
+    vent = None
+    if is_last and ev:
+        last = ev[-1]
+        if last["peak_dev"] > 0 and last["end_s"] >= t[-1] - merge_s:
+            vent = last
+            keep = t < vent["start_s"]
+            if keep.sum() >= 3:
+                med, rsd, band, ev = run(t[keep], v[keep])
+            else:
+                ev = ev[:-1]
+    return {"median": med, "noise_sd": rsd, "band": band, "events": ev, "vent": vent}
 
 
-def fraction_metrics(win: Window, metric_cfg: dict) -> dict:
+METRICS_VERSION = 3   # bump when a metric's definition changes; cached rows recompute
+
+
+def fraction_metrics(win: Window, metric_cfg: dict, is_last: bool = False) -> dict:
     """Every per-fraction number the app reports. Flat dict, one row per
     fraction, so it can be a table column set and later LEFT JOIN purity on
     lot number without restructuring."""
@@ -346,26 +385,26 @@ def fraction_metrics(win: Window, metric_cfg: dict) -> dict:
 
     # Vacuum stability
     if vac:
+        ve = vacuum_events(win, metric_cfg, is_last)
         t, v, _ = win.series(vac)
-        st = tw_stats(t, v, dur, win.max_gap)
+        if ve and ve["vent"]:
+            # Stats describe the cut itself, not the pot being let down to
+            # atmosphere for draining after the run.
+            keep = t < ve["vent"]["start_s"]
+            t, v = t[keep], v[keep]
+        st = tw_stats(t, v, ve["vent"]["start_s"] if ve and ve["vent"] else dur, win.max_gap)
         out.update(vac_mean=st.mean, vac_min=st.min, vac_max=st.max, vac_std=st.std)
-        if len(v):
-            med = float(np.median(v))
-            rsd = robust_sd(v)
-            # The band is whichever is wider: a fixed floor (sensor resolution
-            # and normal wander) or k x the fraction's own robust noise.
-            band = max(col.vacuum_band_abs, col.vacuum_band_rel * abs(med),
-                       float(metric_cfg.get("vacuum_band_k", 4)) * rsd)
-            ev = excursion_events(t, v, med, band, win.max_gap,
-                                  float(metric_cfg.get("excursion_min_s", 60)),
-                                  float(metric_cfg.get("excursion_merge_s", 120)))
+        if ve:
+            ev = ve["events"]
             worst = max(ev, key=lambda e: abs(e["peak_dev"])) if ev else None
-            out.update(vac_median=med, vac_noise_sd=rsd, vac_band=band, vac_excursions=len(ev),
-                       vac_min_outside_band=sum(e["minutes"] for e in ev),
-                       vac_max_deviation=float(np.max(np.abs(v - med))),
+            out.update(vac_median=ve["median"], vac_noise_sd=ve["noise_sd"], vac_band=ve["band"],
+                       vac_excursions=len(ev), vac_min_outside_band=sum(e["minutes"] for e in ev),
+                       vac_max_deviation=float(np.max(np.abs(v - ve["median"]))) if len(v) else None,
                        vac_worst_peak=worst["peak"] if worst else None,
-                       vac_worst_at_min=worst["start_s"] / 60 if worst else None)
+                       vac_worst_at_min=worst["start_s"] / 60 if worst else None,
+                       vac_vented_at_min=ve["vent"]["start_s"] / 60 if ve["vent"] else None)
     out["_version"] = METRICS_VERSION
+    out["_last"] = bool(is_last)
     return {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k, v in out.items()}
 
 

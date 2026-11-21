@@ -403,7 +403,7 @@
     const readings = readingsPanel(m, unitOf("vacuum"));
     const panel = h("section", { class: "panel" }, head, facts, readings, box);
     const statsP = statsPanel(d.stats);
-    host.replaceChildren(panel, eventsPanel(d.vac_events || [], m, unitOf("vacuum")), statsP);
+    host.replaceChildren(panel, eventsPanel(d.vac_events || [], m, unitOf("vacuum"), d.vac_vent), statsP);
 
     const by = (r) => c.series.filter((s) => s.role === r);
     const xr = [c.t0, c.t1];
@@ -419,6 +419,7 @@
       const band = m.vac_median != null ? `median ${num(m.vac_median, 2)}, band ±${num(m.vac_band, 2)}, excursions shaded amber` : "";
       chart(box, { title: "Vacuum", unit: vac[0].unit, note: band, gaps: c.gaps, xRange: xr, height: 190,
         events: (d.vac_events || []).map((e) => [e.x0, e.x1]),
+        marks: d.vac_vent ? [{ x: d.vac_vent.x0, label: "vented, run over" }] : [],
         series: vac.map((s) => ({ label: s.label, x: s.x, y: s.y, color: colourFor(s.role), digits: 2 })) });
     }
     const lv = by("level");   // unit status is in the table below; a 0/1/2 state reads badly on a % axis
@@ -444,8 +445,10 @@
 
   // Each vacuum excursion with its time, so a leak, a pump trip and an
   // operator change can be told apart and checked against the shift log.
-  function eventsPanel(events, m, unit) {
-    if (!events.length) return h("div");
+  function eventsPanel(events, m, unit, vent) {
+    const ventNote = vent ? h("p", { class: "muted", style: "padding: 8px 16px" },
+      `Vented to atmosphere at ${when(vent.at)} (${num(vent.start_s / 60, 0)} min in) to drain the pot. The run is over, so this is not counted as an excursion and the vacuum statistics stop there.`) : null;
+    if (!events.length) return vent ? h("section", { class: "panel" }, h("div", { class: "panel-head" }, h("h3", null, "Vacuum excursions (0)")), ventNote) : h("div");
     const tbody = h("tbody");
     for (const e of events) {
       tbody.append(h("tr", null, h("td", { class: "measured" }, when(e.at)), h("td", { class: "num" }, `${num(e.start_s / 60, 0)} min`),
@@ -457,7 +460,7 @@
         h("span", { class: "muted" }, `Outside ${num(m.vac_median, 2)} ± ${num(m.vac_band, 2)} ${unit} for at least a minute`)),
       h("div", { class: "table-wrap" }, h("table", null, h("thead", null, h("tr", null,
         h("th", null, "Started"), h("th", { class: "num" }, "Into fraction"), h("th", { class: "num" }, "Lasted"),
-        h("th", { class: "num" }, "Peak"), h("th", { class: "num" }, "From median"))), tbody)));
+        h("th", { class: "num" }, "Peak"), h("th", { class: "num" }, "From median"))), tbody)), ventNote);
   }
 
   function statsPanel(stats) {

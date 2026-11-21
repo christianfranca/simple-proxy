@@ -135,6 +135,12 @@ class Service:
             return None, None
         return pd.Timestamp(min(starts)), pd.Timestamp(max(ends))
 
+    def is_last_fraction(self, fr: dict) -> bool:
+        """True for the last numbered (non-Reactor) fraction of its run, by
+        start time. That is where venting after the run is expected."""
+        frs = [f for f in self.run_fractions(fr["col"], fr["distillation"]) if not is_reactor(f) and f["start"]]
+        return bool(frs) and frs[-1]["id"] == fr["id"]
+
     def metrics_for(self, col: Column, fr: dict, df_clean=None, removed=None, force=False) -> dict:
         if not col.has_process_data or not fr["start"] or not fr["end"] or fr["end"] <= fr["start"]:
             return {}
@@ -145,7 +151,7 @@ class Service:
         if df_clean is None:
             df_clean, removed = self.frame(col, fr["start"], fr["end"])
         win = an.Window(df_clean, col, fr["start"], fr["end"], self.cfg.max_gap_s, removed)
-        m = an.fraction_metrics(win, self.cfg.metrics)
+        m = an.fraction_metrics(win, self.cfg.metrics, self.is_last_fraction(fr))
         # A fraction that has not finished yet, or whose data is still being
         # backfilled, should not be frozen in the cache.
         if pd.Timestamp(fr["end"]) < pd.Timestamp.now() - timedelta(hours=1) and m.get("coverage_pct", 0) > 0:
@@ -156,7 +162,13 @@ class Service:
         """Cached metrics, unless they were computed under an older metric
         definition (then they are recomputed on the next view)."""
         hit = self.store.get_metrics(code, fr["distillation"], fr["fraction"], fr["start"], fr["end"])
-        return hit if hit is not None and hit.get("_version") == an.METRICS_VERSION else None
+        if hit is None or hit.get("_version") != an.METRICS_VERSION:
+            return None
+        # A run that gained a fraction since: its old last fraction is no
+        # longer last, so venting must be judged again.
+        if "id" in fr and hit.get("_last") != self.is_last_fraction(fr):
+            return None
+        return hit
 
     def run_detail(self, code: str, dist: str, recompute=False) -> dict:
         col = self.column(code)
@@ -228,16 +240,12 @@ class Service:
         t, d = an.with_gap_breaks(t, d, self.cfg.max_gap_s)
         payload["delta_t"] = {"x": [round(payload["t0"] + x, 1) for x in t], "y": _nan_to_none(np.round(d, 3))}
         metrics = self.metrics_for(col, fr, df, removed)
-        events = []
-        vac = col.by_role("vacuum")
-        if vac and metrics.get("vac_band") is not None:
-            tv, vv, _ = win.series(vac)
-            for e in an.excursion_events(tv, vv, metrics["vac_median"], metrics["vac_band"], self.cfg.max_gap_s,
-                                         float(self.cfg.metrics.get("excursion_min_s", 60)),
-                                         float(self.cfg.metrics.get("excursion_merge_s", 120))):
-                events.append({**e, "x0": payload["t0"] + e["start_s"], "x1": payload["t0"] + e["end_s"],
-                               "at": str(win.start + pd.Timedelta(seconds=e["start_s"]))})
-        out.update(stats=stats, chart=payload, metrics=metrics, vac_events=events)
+        stamp = lambda e: {**e, "x0": payload["t0"] + e["start_s"], "x1": payload["t0"] + e["end_s"],
+                           "at": str(win.start + pd.Timedelta(seconds=e["start_s"]))}
+        ve = an.vacuum_events(win, self.cfg.metrics, self.is_last_fraction(fr))
+        out.update(stats=stats, chart=payload, metrics=metrics,
+                   vac_events=[stamp(e) for e in ve["events"]] if ve else [],
+                   vac_vent=stamp(ve["vent"]) if ve and ve["vent"] else None)
         return out
 
     def fraction_frame(self, fid: int) -> tuple[dict, pd.DataFrame]:
