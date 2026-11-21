@@ -52,6 +52,11 @@ max_gap_s = 120
 #   drop_zero : an exact 0.0 is a comms failure (true for every analog tag).
 #               Status tags are false: 0 is a real state there.
 #
+# MEASURED (Nov 2026): every vacuum transmitter, CD02 and CD03, peaks at about
+# 1015-1030 when the column is at atmosphere, which looks like mbar absolute on
+# both. The vacuum ceiling is 1100 so leaks and venting are kept, not dropped.
+# Units still say "CD02 units" / "CD03 units" until confirmed on the HMI.
+#
 # ASSUMPTION (process, not code): the ranges below are my guesses from the
 # brief, meant to exclude dropouts and nothing else. Check them against what
 # the plant really sees. Vacuum lo is just above zero so a deep real vacuum is
@@ -68,15 +73,19 @@ signals = []
 
 [columns.CD02]
 label = "CD02"
-# vacuum excursion band: |P - fraction median| > max(abs, rel * median)
-vacuum_band_abs = 1.0
-vacuum_band_rel = 0.10
+# Vacuum excursion band around the fraction median: the widest of
+#   vacuum_band_abs, vacuum_band_rel x median, and [metrics] vacuum_band_k x noise.
+# PT_101 reads in steps of about 0.35 and normal noise is about +/-0.7, so 2.0
+# sits clear of noise. Leaks, pump trips and operator errors in run 190 went
+# 5 to 17 above the median.
+vacuum_band_abs = 2.0
+vacuum_band_rel = 0.0
 pot_temp_threshold = 120.0    # minutes-above threshold, degC (assumption)
 signals = [
   { tag = 23, name = "IH_TT_101.PV",       label = "Pot temp",        role = "pot_temp",  unit = "°C", lo = 1,    hi = 300, drop_zero = true },
   { tag = 12, name = "TEMP_CONTROL_SP_CD02", label = "Temp setpoint", role = "temp_sp",   unit = "°C", lo = 1,    hi = 300, drop_zero = true },
-  { tag = 5,  name = "PT_101.PV",          label = "Vacuum",          role = "vacuum",    unit = "CD02 units", lo = 0.001, hi = 30, drop_zero = true },
-  { tag = 6,  name = "PT_102.PV",          label = "Vacuum 2",        role = "vacuum_2",  unit = "CD02 units", lo = 0.001, hi = 30, drop_zero = true },
+  { tag = 5,  name = "PT_101.PV",          label = "Vacuum",          role = "vacuum",    unit = "CD02 units", lo = 0.001, hi = 1100, drop_zero = true },
+  { tag = 6,  name = "PT_102.PV",          label = "Vacuum 2",        role = "vacuum_2",  unit = "CD02 units", lo = 0.001, hi = 1100, drop_zero = true },
   { tag = 2,  name = "TT_107",             label = "Condenser (TT_107)", role = "condenser", unit = "°C", lo = 1, hi = 300, drop_zero = true },
   { tag = 0,  name = "TT_101",             label = "Column TT_101",   role = "column",    unit = "°C", lo = 1,    hi = 300, drop_zero = true },
   { tag = 1,  name = "TT_103",             label = "Column TT_103",   role = "column",    unit = "°C", lo = 1,    hi = 300, drop_zero = true },
@@ -87,14 +96,14 @@ signals = [
 
 [columns.CD03]
 label = "CD03"
-vacuum_band_abs = 20.0
-vacuum_band_rel = 0.10
+vacuum_band_abs = 20.0     # ASSUMPTION: not yet checked against real CD03 data
+vacuum_band_rel = 0.0
 pot_temp_threshold = 120.0
 signals = [
   { tag = 24, name = "IH_TT_001.PV",       label = "Pot temp",        role = "pot_temp",  unit = "°C", lo = 1,    hi = 300, drop_zero = true },
   { tag = 21, name = "TEMP_CONTROL_SP_CD03", label = "Temp setpoint", role = "temp_sp",   unit = "°C", lo = 1,    hi = 300, drop_zero = true },
-  { tag = 19, name = "PT_001.PV",          label = "Vacuum",          role = "vacuum",    unit = "CD03 units", lo = 0.001, hi = 800, drop_zero = true },
-  { tag = 20, name = "PT_002.PV",          label = "Vacuum 2",        role = "vacuum_2",  unit = "CD03 units", lo = 0.001, hi = 800, drop_zero = true },
+  { tag = 19, name = "PT_001.PV",          label = "Vacuum",          role = "vacuum",    unit = "CD03 units", lo = 0.001, hi = 1100, drop_zero = true },
+  { tag = 20, name = "PT_002.PV",          label = "Vacuum 2",        role = "vacuum_2",  unit = "CD03 units", lo = 0.001, hi = 1100, drop_zero = true },
   { tag = 16, name = "TT_007",             label = "Condenser (TT_007)", role = "condenser", unit = "°C", lo = 1, hi = 300, drop_zero = true },
   { tag = 14, name = "TT_001",             label = "Column TT_001",   role = "column",    unit = "°C", lo = 1,    hi = 300, drop_zero = true },
   { tag = 15, name = "TT_003",             label = "Column TT_003",   role = "column",    unit = "°C", lo = 1,    hi = 300, drop_zero = true },
@@ -114,6 +123,11 @@ steady_band_c = 1.0
 steady_window_min = 20
 # Ramp rate: steepest pot-temp slope over any window of this length (degC/h).
 ramp_window_min = 15
+# Vacuum excursions: an event must be wider than the band for at least
+# excursion_min_s; dips back inside for under excursion_merge_s join one event.
+vacuum_band_k = 4
+excursion_min_s = 60
+excursion_merge_s = 120
 # Cross-run comparison resamples each fraction onto this many % bins.
 profile_bins = 200
 

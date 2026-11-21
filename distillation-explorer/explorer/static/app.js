@@ -126,7 +126,7 @@
     const tables = opts.series.map((s) => [s.x, s.y]);
     const data = opts.shared ? [opts.series[0].x, ...opts.series.map((s) => s.y)]
       : (tables.length ? uPlot.join(tables, tables.map(() => [1])) : [[]]);
-    const gapFill = css("--gap-fill"), markStroke = css("--color-rule-2"), markText = css("--color-muted");
+    const gapFill = css("--gap-fill"), eventFill = css("--event-fill"), markStroke = css("--color-rule-2"), markText = css("--color-muted");
     const u = new uPlot({
       width: Math.max(host.clientWidth - 16, 300), height: opts.height || 220,
       cursor: { sync: opts.percent ? undefined : { key: syncKey.key }, focus: { prox: 16 }, drag: { x: true, y: false } },
@@ -152,6 +152,11 @@
           for (const [a, b] of opts.gaps || []) {
             const x0 = u.valToPos(a, "x", true), x1 = u.valToPos(b, "x", true);
             ctx.fillRect(x0, bbox.top, Math.max(x1 - x0, 1), bbox.height);
+          }
+          ctx.fillStyle = eventFill;
+          for (const [a, b] of opts.events || []) {
+            const x0 = u.valToPos(a, "x", true), x1 = u.valToPos(b, "x", true);
+            ctx.fillRect(x0, bbox.top, Math.max(x1 - x0, 2), bbox.height);
           }
           ctx.strokeStyle = markStroke; ctx.fillStyle = markText; ctx.lineWidth = 1;
           ctx.font = `${11 * devicePixelRatio}px ${css("--font-body")}`;
@@ -252,7 +257,7 @@
     catch (e) { main.replaceChildren(errorBox(e, render)); return; }
 
     const numbered = run.fractions.filter((f) => !f.reactor);
-    const kg = numbered.reduce((s, f) => s + (f.kg || 0), 0);
+    const kg = run.fractions.reduce((s, f) => s + (f.kg || 0), 0);   // Reactor (pot residue) counts
     const head = h("div", null,
       h("div", { class: "head-row" },
         h("h1", null, `${cm.label} distillation ${run.distillation}`),
@@ -291,8 +296,9 @@
       const left = pct(f.start), width = Math.max(pct(f.end) - left, 0.15);
       const style = `left:${left}%;width:${width}%`;
       if (f.reactor) {
-        reactorLane.append(h("div", { class: "tl-bar tl-bar--reactor", style, title: `Reactor ${when(f.start)} to ${when(f.end)}` },
-          h("span", { class: "f" }, "Reactor, whole run")));
+        reactorLane.append(h("div", { class: "tl-bar tl-bar--reactor", style,
+          title: `Reactor (left in the pot), ${when(f.start)} to ${when(f.end)}${f.lot ? `\nLot ${f.lot}` : ""}${f.kg != null ? `, ${f.kg} kg` : ""}` },
+          h("span", { class: "f" }, `Reactor, left in the pot${f.lot ? `, ${f.lot}` : ""}${f.kg != null ? `, ${num(f.kg, 0)} kg` : ""}`)));
         continue;
       }
       const m = f.metrics || {};
@@ -324,6 +330,7 @@
     const cols = [["Fraction"], ["Lot"], ["kg", 1], ["Start"], ["Duration", 1]];
     if (has) cols.push(["Coverage", 1], ["Pot avg °C", 1], ["ΔT start", 1], ["ΔT end", 1], ["Vac std", 1], ["Excursions", 1], ["Steady after", 1]);
     const tbody = h("tbody");
+    const reactors = run.fractions.filter((f) => f.reactor);
     for (const f of run.fractions) {
       if (f.reactor) continue;
       const m = f.metrics || {};
@@ -336,6 +343,13 @@
         h("td", { class: "num" }, m.time_to_steady_min == null ? "–" : `${num(m.time_to_steady_min, 0)} min`));
       tbody.append(h("tr", { class: "pick", tabindex: "0", "aria-selected": String(String(f.id) === state.f),
         onclick: () => go({ f: String(f.id) }), onkeydown: (e) => { if (e.key === "Enter") go({ f: String(f.id) }); } }, cells));
+    }
+    // Reactor: what is left in the pot. Lot and kilos, no column statistics.
+    for (const f of reactors) {
+      const cells = [h("td", null, "Reactor"), h("td", { class: "measured" }, f.lot || "–"), h("td", { class: "num" }, num(f.kg, 0)),
+        h("td", { class: "measured" }, when(f.start)), h("td", { class: "num" }, dur(f.duration_h))];
+      if (has) cells.push(h("td", { class: "muted", colspan: "7" }, "left in the pot, no column statistics"));
+      tbody.append(h("tr", null, cells));
     }
     return h("section", { class: "panel" },
       h("div", { class: "panel-head" }, h("h2", null, "Fractions"), exportLinks("run", { col: state.col, dist: state.dist })),
@@ -389,7 +403,7 @@
     const readings = readingsPanel(m, unitOf("vacuum"));
     const panel = h("section", { class: "panel" }, head, facts, readings, box);
     const statsP = statsPanel(d.stats);
-    host.replaceChildren(panel, statsP);
+    host.replaceChildren(panel, eventsPanel(d.vac_events || [], m, unitOf("vacuum")), statsP);
 
     const by = (r) => c.series.filter((s) => s.role === r);
     const xr = [c.t0, c.t1];
@@ -402,8 +416,9 @@
       series: [{ label: "ΔT", x: c.delta_t.x, y: c.delta_t.y, color: colourFor("pot_temp"), digits: 1 }] });
     const vac = [...by("vacuum"), ...by("vacuum_2")];
     if (vac.length) {
-      const band = m.vac_median != null ? `median ${num(m.vac_median, 2)}, band ±${num(m.vac_band, 2)}` : "";
+      const band = m.vac_median != null ? `median ${num(m.vac_median, 2)}, band ±${num(m.vac_band, 2)}, excursions shaded amber` : "";
       chart(box, { title: "Vacuum", unit: vac[0].unit, note: band, gaps: c.gaps, xRange: xr, height: 190,
+        events: (d.vac_events || []).map((e) => [e.x0, e.x1]),
         series: vac.map((s) => ({ label: s.label, x: s.x, y: s.y, color: colourFor(s.role), digits: 2 })) });
     }
     const lv = by("level");   // unit status is in the table below; a 0/1/2 state reads badly on a % axis
@@ -421,9 +436,28 @@
       r("Vacuum std", m.vac_std, vacUnit, 3),
       r("Vacuum excursions", m.vac_excursions, "", 0, m.vac_excursions > 0),
       r("Time outside band", m.vac_min_outside_band, "min", 0),
+      r("Worst excursion peak", m.vac_worst_peak, vacUnit, 2, m.vac_worst_peak != null),
       r("Steady after", m.time_to_steady_min, "min", 0),
       r("Steepest pot ramp", m.pot_ramp_max_c_per_h, "°C/h"),
       r(`Above ${m.pot_threshold_c ?? "–"} °C`, m.pot_min_above_threshold, "min", 0));
+  }
+
+  // Each vacuum excursion with its time, so a leak, a pump trip and an
+  // operator change can be told apart and checked against the shift log.
+  function eventsPanel(events, m, unit) {
+    if (!events.length) return h("div");
+    const tbody = h("tbody");
+    for (const e of events) {
+      tbody.append(h("tr", null, h("td", { class: "measured" }, when(e.at)), h("td", { class: "num" }, `${num(e.start_s / 60, 0)} min`),
+        h("td", { class: "num" }, dur(e.minutes / 60)), h("td", { class: "num" }, num(e.peak, 2)),
+        h("td", { class: "num" }, `${e.peak_dev > 0 ? "+" : ""}${num(e.peak_dev, 2)}`)));
+    }
+    return h("section", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h3", null, `Vacuum excursions (${events.length})`),
+        h("span", { class: "muted" }, `Outside ${num(m.vac_median, 2)} ± ${num(m.vac_band, 2)} ${unit} for at least a minute`)),
+      h("div", { class: "table-wrap" }, h("table", null, h("thead", null, h("tr", null,
+        h("th", null, "Started"), h("th", { class: "num" }, "Into fraction"), h("th", { class: "num" }, "Lasted"),
+        h("th", { class: "num" }, "Peak"), h("th", { class: "num" }, "From median"))), tbody)));
   }
 
   function statsPanel(stats) {

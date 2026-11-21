@@ -80,14 +80,24 @@ def test_boundary_sample_lands_in_one_fraction():
 
 
 # --- vacuum excursions ------------------------------------------------------------
-def test_excursion_count():
-    t = np.arange(0, 3600, 20.0)
-    v = np.full(len(t), 5.0)
-    v[30:40] = 9.0
-    v[100:105] = 9.0
-    ev, mins, _ = an.excursions(t, v, 5.0, 1.0, 3600, 120)
-    assert ev == 2
-    assert mins == pytest.approx(15 * 20 / 60)
+def test_excursion_events():
+    t = np.arange(0, 7200, 10.0)
+    v = np.full(len(t), 12.73)
+    v[100:130] = 25.0      # 5 min leak
+    v[131:140] = 25.0      # dips back for one scan: same event
+    v[400:402] = 25.0      # 20 s blip: noise, dropped
+    v[500:520] = 20.0      # 200 s pump trip: second event
+    ev = an.excursion_events(t, v, 12.73, 2.0, 120, min_s=60, merge_s=120)
+    assert len(ev) == 2
+    assert ev[0]["start_s"] == 1000 and ev[0]["minutes"] == pytest.approx(400 / 60)
+    assert ev[0]["peak"] == 25.0
+
+
+def test_excursion_ends_at_data_hole():
+    t = np.concatenate([np.arange(0, 300, 10.0), np.arange(3000, 3300, 10.0)])
+    v = np.full(len(t), 25.0)
+    ev = an.excursion_events(t, v, 12.73, 2.0, 120, min_s=60, merge_s=120)
+    assert len(ev) == 2
 
 
 def test_profile_percent_axis():

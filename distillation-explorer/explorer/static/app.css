@@ -24,6 +24,7 @@
   --ctx-3: oklch(52% 0.01 250);
   --gap-fill: color-mix(in oklab, var(--color-bad) 14%, transparent);
   --bf-fill: color-mix(in oklab, var(--color-cool) 10%, transparent);
+  --event-fill: color-mix(in oklab, var(--color-accent) 22%, transparent);   /* amber = a deviation */
   --color-accent-hover: oklch(86% 0.13 80);
 }
 

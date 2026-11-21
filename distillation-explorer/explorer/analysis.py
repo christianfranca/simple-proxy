@@ -235,17 +235,61 @@ def max_ramp_per_h(t, v, window_s) -> float:
     return float(best)
 
 
-def excursions(t, v, centre, band, end_s, max_gap):
-    """Count contiguous runs outside centre +/- band. A run broken by a data
-    hole counts as two, deliberately: we cannot know it stayed out."""
+def excursion_events(t, v, centre, band, max_gap, min_s=60.0, merge_s=120.0) -> list[dict]:
+    """Vacuum excursions as events, not as threshold crossings.
+
+    An event is a stretch where |v - centre| > band. Stretches separated by
+    less than merge_s are one event (a pressure that wobbles back across the
+    line for a scan or two is still the same leak). Events shorter than min_s
+    are noise and dropped. A data hole longer than max_gap ends an event: we
+    cannot know what the pressure did while the logger was down.
+
+    Returns [{start_s, end_s, minutes, peak_dev, peak}] in time order.
+    """
     if len(v) == 0:
-        return 0, 0.0, float("nan")
+        return []
     out = np.abs(v - centre) > band
-    w = weights(t, end_s, max_gap)
-    starts = out & ~np.concatenate([[False], out[:-1]])
-    breaks = np.concatenate([[False], np.diff(t) > max_gap]) & out
-    events = int((starts | breaks).sum())
-    return events, float(w[out].sum() / 60.0), float(np.max(np.abs(v - centre)))
+    if not out.any():
+        return []
+    raw = []          # (i_first, i_last) runs of consecutive out-of-band samples
+    i, n = 0, len(v)
+    while i < n:
+        if not out[i]:
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and out[j + 1] and t[j + 1] - t[j] <= max_gap:
+            j += 1
+        raw.append([i, j])
+        i = j + 1
+    merged = [raw[0]]
+    for i, j in raw[1:]:
+        pi, pj = merged[-1]
+        if t[i] - t[pj] <= merge_s and not np.any(np.diff(t[pj:i + 1]) > max_gap):
+            merged[-1][1] = j
+        else:
+            merged.append([i, j])
+    events = []
+    for i, j in merged:
+        end = t[j] + min(t[j + 1] - t[j], max_gap) if j + 1 < n else t[j]
+        if end - t[i] < min_s:
+            continue
+        seg = v[i:j + 1]
+        k = int(np.argmax(np.abs(seg - centre)))
+        events.append({"start_s": float(t[i]), "end_s": float(end), "minutes": float((end - t[i]) / 60),
+                       "peak_dev": float(seg[k] - centre), "peak": float(seg[k])})
+    return events
+
+
+def robust_sd(v) -> float:
+    """Spread that ignores the excursions themselves: 1.4826 x median absolute
+    deviation, which equals the standard deviation for normal noise."""
+    if len(v) == 0:
+        return float("nan")
+    return float(1.4826 * np.median(np.abs(v - np.median(v))))
+
+
+METRICS_VERSION = 2   # bump when a metric's definition changes; cached rows recompute
 
 
 def fraction_metrics(win: Window, metric_cfg: dict) -> dict:
@@ -307,10 +351,21 @@ def fraction_metrics(win: Window, metric_cfg: dict) -> dict:
         out.update(vac_mean=st.mean, vac_min=st.min, vac_max=st.max, vac_std=st.std)
         if len(v):
             med = float(np.median(v))
-            band = max(col.vacuum_band_abs, col.vacuum_band_rel * abs(med))
-            ev, mins, maxdev = excursions(t, v, med, band, dur, win.max_gap)
-            out.update(vac_median=med, vac_band=band, vac_excursions=ev,
-                       vac_min_outside_band=mins, vac_max_deviation=maxdev)
+            rsd = robust_sd(v)
+            # The band is whichever is wider: a fixed floor (sensor resolution
+            # and normal wander) or k x the fraction's own robust noise.
+            band = max(col.vacuum_band_abs, col.vacuum_band_rel * abs(med),
+                       float(metric_cfg.get("vacuum_band_k", 4)) * rsd)
+            ev = excursion_events(t, v, med, band, win.max_gap,
+                                  float(metric_cfg.get("excursion_min_s", 60)),
+                                  float(metric_cfg.get("excursion_merge_s", 120)))
+            worst = max(ev, key=lambda e: abs(e["peak_dev"])) if ev else None
+            out.update(vac_median=med, vac_noise_sd=rsd, vac_band=band, vac_excursions=len(ev),
+                       vac_min_outside_band=sum(e["minutes"] for e in ev),
+                       vac_max_deviation=float(np.max(np.abs(v - med))),
+                       vac_worst_peak=worst["peak"] if worst else None,
+                       vac_worst_at_min=worst["start_s"] / 60 if worst else None)
+    out["_version"] = METRICS_VERSION
     return {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k, v in out.items()}
 
 

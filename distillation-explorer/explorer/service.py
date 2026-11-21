@@ -109,12 +109,14 @@ class Service:
             starts = [f["start"] for f in frs if f["start"]]
             ends = [f["end"] for f in frs if f["end"]]
             numbered = [f for f in frs if not is_reactor(f)]
+            # Reactor = what is left in the pot. Its kilos count in the run
+            # total; it gets no process statistics.
             out.append({
                 "distillation": dist,
                 "start": min(starts) if starts else None,
                 "end": max(ends) if ends else None,
                 "fractions": len(numbered),
-                "kg": sum(f["kg"] or 0 for f in numbered),
+                "kg": sum(f["kg"] or 0 for f in frs),
                 "has_reactor": any(is_reactor(f) for f in frs),
             })
         out.sort(key=lambda r: (r["start"] or "", natural_key(r["distillation"])), reverse=True)
@@ -137,7 +139,7 @@ class Service:
         if not col.has_process_data or not fr["start"] or not fr["end"] or fr["end"] <= fr["start"]:
             return {}
         if not force:
-            hit = self.store.get_metrics(col.code, fr["distillation"], fr["fraction"], fr["start"], fr["end"])
+            hit = self._cached_metrics(col.code, fr)
             if hit is not None:
                 return hit
         if df_clean is None:
@@ -150,6 +152,12 @@ class Service:
             self.store.put_metrics(col.code, fr["distillation"], fr["fraction"], fr["lot"], fr["start"], fr["end"], m)
         return m
 
+    def _cached_metrics(self, code: str, fr: dict) -> dict | None:
+        """Cached metrics, unless they were computed under an older metric
+        definition (then they are recomputed on the next view)."""
+        hit = self.store.get_metrics(code, fr["distillation"], fr["fraction"], fr["start"], fr["end"])
+        return hit if hit is not None and hit.get("_version") == an.METRICS_VERSION else None
+
     def run_detail(self, code: str, dist: str, recompute=False) -> dict:
         col = self.column(code)
         frs = self.run_fractions(code, dist)
@@ -158,7 +166,7 @@ class Service:
                "start": str(start) if start is not None else None, "end": str(end) if end is not None else None,
                "fractions": [], "overview": None}
         need_full = recompute or any(
-            self.store.get_metrics(code, f["distillation"], f["fraction"], f["start"], f["end"]) is None
+            self._cached_metrics(code, f) is None
             for f in frs if not is_reactor(f) and f["start"] and f["end"])
         full = self.frame(col, start, end) if (col.has_process_data and start is not None and need_full) else (None, None)
         for f in frs:
@@ -219,8 +227,17 @@ class Service:
         t, d = an.delta_t_series(win)
         t, d = an.with_gap_breaks(t, d, self.cfg.max_gap_s)
         payload["delta_t"] = {"x": [round(payload["t0"] + x, 1) for x in t], "y": _nan_to_none(np.round(d, 3))}
-        out.update(stats=stats, chart=payload, metrics=self.metrics_for(col, fr, df, removed),
-                   band={"vacuum": [col.vacuum_band_abs, col.vacuum_band_rel]})
+        metrics = self.metrics_for(col, fr, df, removed)
+        events = []
+        vac = col.by_role("vacuum")
+        if vac and metrics.get("vac_band") is not None:
+            tv, vv, _ = win.series(vac)
+            for e in an.excursion_events(tv, vv, metrics["vac_median"], metrics["vac_band"], self.cfg.max_gap_s,
+                                         float(self.cfg.metrics.get("excursion_min_s", 60)),
+                                         float(self.cfg.metrics.get("excursion_merge_s", 120))):
+                events.append({**e, "x0": payload["t0"] + e["start_s"], "x1": payload["t0"] + e["end_s"],
+                               "at": str(win.start + pd.Timedelta(seconds=e["start_s"]))})
+        out.update(stats=stats, chart=payload, metrics=metrics, vac_events=events)
         return out
 
     def fraction_frame(self, fid: int) -> tuple[dict, pd.DataFrame]:
