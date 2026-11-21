@@ -158,19 +158,22 @@ def make(cfg: Config) -> tuple[Path, Path]:
     for col, first in (("CD01", 77), ("CDMOL", 31)):
         all_runs += _schedule(rng, col, first, T0, T1)
 
-    fmt = lambda d: f"{d.month}/{d.day}/{d.strftime('%y')} {d.strftime('%I:%M %p').lstrip('0')}"
+    # Same shape as the real flow: SharePoint field names, dates in UTC.
+    from zoneinfo import ZoneInfo
+    plant, utc = ZoneInfo("America/New_York"), ZoneInfo("UTC")
+    fmt = lambda d: d.replace(tzinfo=plant).astimezone(utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    row = lambda rid, col, dist, frac, lot, kg, a, b: {
+        "ID_x002d_fraction": rid, "Coluna": col, "Distillation": str(dist), "Fraction": frac,
+        "ID_x002d_tambor": lot, "Weighing_x0028_Kg_x0029_": kg,
+        "Start_x002d_Dateandtime": fmt(a), "End_x002d_Dateandtime": fmt(b)}
     rows = []
     lot = 5100
     for r in all_runs:
         rid = r["start"].strftime("%Y%m%d%H%M%S")
-        rows.append({"ID - fraction": int(rid), "Coluna": r["col"], "Distillation": r["dist"], "Fraction": "Reactor",
-                     "Lote": None, "SumWeighing (Kg)": None,
-                     "Start Date (EST)": fmt(r["start"]), "End Date (EST)": fmt(r["end"])})
+        rows.append(row(rid, r["col"], r["dist"], "Reactor", None, None, r["start"], r["end"]))
         for f, fs, fe, kg in r["fractions"]:
             lot += 1
-            rows.append({"ID - fraction": int(rid), "Coluna": r["col"], "Distillation": r["dist"], "Fraction": f,
-                         "Lote": f"VBAR00{lot}", "SumWeighing (Kg)": kg,
-                         "Start Date (EST)": fmt(fs), "End Date (EST)": fmt(fe)})
+            rows.append(row(rid, r["col"], r["dist"], f, f"VBAR00{lot}", kg, fs, fe))
     rng.shuffle(rows)  # the source is not ordered; the app must sort
     ef = cfg.path("data/demo_eflow.json")
     ef.write_text(json.dumps({"eflowData": rows, "success": True}, indent=1))

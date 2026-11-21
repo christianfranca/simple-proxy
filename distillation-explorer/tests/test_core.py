@@ -101,13 +101,30 @@ FIELDS = CFG.eflow["fields"]
 
 
 def row(frac, start, end, dist=190, col="CD02", lot="VBAR005198"):
-    return {"ID - fraction": 20260727232016, "Coluna": col, "Distillation": dist, "Fraction": frac,
-            "Lote": lot, "SumWeighing (Kg)": 26, "Start Date (EST)": start, "End Date (EST)": end}
+    f = FIELDS
+    return {f["run_id"]: "20260727232016", f["column"]: col, f["distillation"]: str(dist), f["fraction"]: frac,
+            f["lot"]: lot, f["kg"]: 26.0, f["start"]: start, f["end"]: end}
 
 
 def test_eflow_date_format():
     assert parse_date("7/28/26 1:00 AM", []) == datetime(2026, 7, 28, 1, 0)
     assert parse_date("7/28/26 10:50 PM", []) == datetime(2026, 7, 28, 22, 50)
+
+
+def test_eflow_utc_becomes_plant_time():
+    # the real flow sends UTC: run 190 fraction 1 starts 05:00Z = 01:00 EDT
+    assert parse_date("2026-07-28T05:00:00Z", []) == datetime(2026, 7, 28, 1, 0)
+    assert parse_date("2026-01-15T06:00:00Z", []) == datetime(2026, 1, 15, 1, 0)   # EST in winter
+
+
+def test_round_hundred_counts_flagged():
+    from explorer.eflow import looks_truncated
+    assert looks_truncated(600) and looks_truncated(5000) and not looks_truncated(119)
+
+
+def test_body_template_per_column():
+    from explorer.eflow import _fill
+    assert _fill({"columnId": "{column}", "action": "get"}, "CD02") == {"columnId": "CD02", "action": "get"}
 
 
 def test_fraction_stays_string():

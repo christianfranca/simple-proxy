@@ -9,6 +9,7 @@ the query body the flow expects.
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -61,7 +62,7 @@ def parse_date(s, warnings: list[str]) -> datetime | None:
     if dt.tzinfo is not None:
         from zoneinfo import ZoneInfo  # needs the tzdata package on Windows
         dt = dt.astimezone(ZoneInfo("America/New_York")).replace(tzinfo=None)
-        msg = "Some Eflow dates carried a time zone; converted to America/New_York."
+        msg = "NOTE: Eflow dates arrive in UTC and were converted to plant time (America/New_York)."
         if msg not in warnings:
             warnings.append(msg)
     return dt
@@ -126,13 +127,62 @@ def fetch_raw(cfg: Config) -> dict:
         p = p if p.is_absolute() else cfg.path(str(p))
         return json.loads(p.read_text(encoding="utf-8"))
     method = e.get("method", "GET").upper()
-    data = json.dumps(e.get("body") or {}).encode() if method == "POST" else None
+    rows_key = e.get("rows_key", "eflowData")
+    body = e.get("body") or {}
+    # A body that mentions {column} means one call per column (the real flow
+    # takes {"columnId": "CD02", "action": "get"}); otherwise a single call.
+    per_column = "{column}" in json.dumps(body)
+    columns = e.get("columns") or [None] if per_column else [None]
+    merged, counts = [], {}
+    for col in columns:
+        payload = _call(url, method, _fill(body, col), e)
+        if not isinstance(payload, dict):
+            raise EflowError(f"Eflow response for {col or 'the list'} is not a JSON object")
+        if payload.get("success") is False:
+            raise EflowError(f"Eflow flow reported success: false for {col or 'the list'}")
+        rows = payload.get(rows_key)
+        if not isinstance(rows, list):
+            raise EflowError(f"Eflow response for {col or 'the list'} has no list under {rows_key!r}")
+        merged += rows
+        if col:
+            counts[col] = len(rows)
+    out = {rows_key: merged, "success": True}
+    if counts:
+        out["_per_column"] = counts
+    return out
+
+
+def _fill(body, col):
+    """Replace "{column}" in any string of the body with the column code."""
+    if col is None:
+        return body
+    if isinstance(body, dict):
+        return {k: _fill(v, col) for k, v in body.items()}
+    if isinstance(body, list):
+        return [_fill(v, col) for v in body]
+    if isinstance(body, str):
+        return body.replace("{column}", col)
+    return body
+
+
+def _call(url: str, method: str, body, e: dict) -> dict:
+    data = json.dumps(body).encode() if method == "POST" else None
     headers = {"Accept": "application/json", **(e.get("headers") or {})}
     if data is not None:
         headers.setdefault("Content-Type", "application/json")
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=float(e.get("timeout_s", 120))) as resp:
-        return json.loads(resp.read().decode("utf-8-sig"))
+    try:
+        with urllib.request.urlopen(req, timeout=float(e.get("timeout_s", 120))) as resp:
+            return json.loads(resp.read().decode("utf-8-sig"))
+    except urllib.error.HTTPError as err:
+        detail = err.read()[:400].decode("utf-8", "replace")
+        raise EflowError(f"Eflow flow answered HTTP {err.code}: {detail}") from None
+
+
+def looks_truncated(n: int) -> bool:
+    """A count that smells like a paging or Top Count limit rather than the
+    real length of the list: the classic values, or any round hundred."""
+    return n in TRUNCATION_TELLS or (n >= 100 and n % 100 == 0)
 
 
 def _key(r):
@@ -155,6 +205,8 @@ def refresh(cfg: Config, store: Store, payload: dict | None = None) -> dict:
         raise EflowError(f"Eflow response has no list under {e.get('rows_key', 'eflowData')!r}")
 
     norm, warnings = normalise(rows, e["fields"])
+    notes = [w for w in warnings if w.startswith("NOTE: ")]
+    warnings = [w for w in warnings if not w.startswith("NOTE: ")]
     n = len(rows)
 
     # --- completeness checks -------------------------------------------------
@@ -163,8 +215,14 @@ def refresh(cfg: Config, store: Store, payload: dict | None = None) -> dict:
         reported = int(payload[count_key])
         if reported != n:
             warnings.insert(0, f"INCOMPLETE: the flow says {reported} rows but sent {n}.")
-    if n in TRUNCATION_TELLS:
-        warnings.insert(0, f"SUSPICIOUS ROW COUNT: exactly {n} rows is a classic paging limit. "
+    per_col = payload.get("_per_column") or {}
+    capped = [f"{c} {k}" for c, k in per_col.items() if looks_truncated(k)]
+    if capped:
+        warnings.insert(0, "SUSPICIOUS ROW COUNTS: " + ", ".join(capped) + " rows. A round number like this "
+                           "is almost always a Top Count or paging limit in the flow's Get items action, so the "
+                           "oldest runs are probably missing. Raise Top Count (max 5000) or turn pagination on.")
+    elif looks_truncated(n):
+        warnings.insert(0, f"SUSPICIOUS ROW COUNT: exactly {n} rows looks like a paging limit. "
                            "Check pagination is on in the flow's Get items action.")
     prev = store.last_refresh()
     if prev and n < prev.get("rows", 0):
@@ -201,6 +259,8 @@ def refresh(cfg: Config, store: Store, payload: dict | None = None) -> dict:
         "removed": [list(k) for k in removed],
         "changed": changed,
         "warnings": warnings,
+        "notes": [n.removeprefix("NOTE: ") for n in notes],
+        "per_column": payload.get("_per_column") or {},
     }
     store.log_refresh(report)
     return report

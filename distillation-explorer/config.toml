@@ -122,19 +122,24 @@ profile_bins = 200
 # ---------------------------------------------------------------------------
 [eflow]
 url = ""
-method = "GET"        # or "POST"
-timeout_s = 120
+# The flow (the same one the label printer uses) only accepts POST, and
+# answers one column per call. "{column}" in the body is replaced by each code
+# in `columns`, and the rows from every call are combined.
+method = "POST"
+body = { columnId = "{column}", action = "get" }
+columns = ["CD01", "CD02", "CD03", "CDMOL"]
+timeout_s = 180
 headers = {}
-body = {}             # JSON body if method = POST
 rows_key = "eflowData"
 count_key = ""        # if the flow reports its own row count, name the key here
-# Field names in the Eflow JSON. Change if the real response differs.
+# Field names in the Eflow JSON (SharePoint internal names, as the flow sends
+# them). Dates arrive in UTC ("...Z") and are converted to plant time.
 [eflow.fields]
-run_id = "ID - fraction"
+run_id = "ID_x002d_fraction"
 column = "Coluna"
 distillation = "Distillation"
 fraction = "Fraction"
-lot = "Lote"
-kg = "SumWeighing (Kg)"
-start = "Start Date (EST)"
-end = "End Date (EST)"
+lot = "ID_x002d_tambor"
+kg = "Weighing_x0028_Kg_x0029_"
+start = "Start_x002d_Dateandtime"
+end = "End_x002d_Dateandtime"
