@@ -130,32 +130,42 @@ class ProcessDB:
         return df.sort_values(["tag", "ts"], kind="stable").reset_index(drop=True)
 
     # --- coverage ------------------------------------------------------------
-    def coverage_hourly(self, sig: Signal, start: datetime, end: datetime) -> pd.DataFrame:
-        """Minutes per hour that hold at least one *plausible* sample, split by
-        live vs backfilled.
+    def coverage_hourly(self, sigs: list[Signal], start: datetime, end: datetime) -> pd.DataFrame:
+        """Minutes per hour in which at least one of `sigs` logged a plausible
+        value, split by live vs backfilled.
 
-        Counting distinct minutes rather than rows is what makes this rate
-        independent: one 20 s live minute and one 10 s backfilled minute both
-        count as one covered minute.
+        Pass several instruments to measure "was the logger running": a single
+        tag can legitimately read 0 for a day (the induction-heater pot temp
+        does whenever the heater is off), which says nothing about the logger.
+
+        Counting distinct minutes rather than rows keeps it rate independent:
+        a 20 s live minute and a 10 s backfilled minute both count once.
         """
-        zero = " AND Val <> 0" if sig.drop_zero else ""
+        if not sigs:
+            return pd.DataFrame(columns=["hour", "backfilled", "minutes"])
+        conds, cparams = [], []
+        for sg in sigs:
+            conds.append("(TagIndex = ? AND Val >= ? AND Val <= ?" + (" AND Val <> 0)" if sg.drop_zero else ")"))
+            cparams += [sg.tag, sg.lo, sg.hi]
+        tags = ",".join("?" * len(sigs))
+        plausible = " OR ".join(conds)
         if self.backend == "demo":
             sql = (
                 "SELECT substr(DateAndTime,1,13) AS hr, IsBackfilled, "
                 "COUNT(DISTINCT substr(DateAndTime,1,16)) "
-                f"FROM {self.view} WHERE TagIndex = ? AND DateAndTime >= ? AND DateAndTime < ? "
-                f"AND Val >= ? AND Val <= ?{zero} GROUP BY hr, IsBackfilled"
+                f"FROM {self.view} WHERE TagIndex IN ({tags}) AND DateAndTime >= ? AND DateAndTime < ? "
+                f"AND ({plausible}) GROUP BY hr, IsBackfilled"
             )
-            params = [sig.tag, start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), sig.lo, sig.hi]
+            params = [*(sg.tag for sg in sigs), start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), *cparams]
         else:
             sql = (
                 "SELECT DATEADD(hour, DATEDIFF(hour, 0, DateAndTime), 0) AS hr, CAST(IsBackfilled AS int), "
                 "COUNT(DISTINCT DATEDIFF(minute, '2000-01-01', DateAndTime)) "
-                f"FROM {self.view} WHERE TagIndex = ? AND DateAndTime >= ? AND DateAndTime < ? "
-                f"AND Val >= ? AND Val <= ?{zero} "
+                f"FROM {self.view} WHERE TagIndex IN ({tags}) AND DateAndTime >= ? AND DateAndTime < ? "
+                f"AND ({plausible}) "
                 "GROUP BY DATEADD(hour, DATEDIFF(hour, 0, DateAndTime), 0), CAST(IsBackfilled AS int)"
             )
-            params = [sig.tag, start, end, sig.lo, sig.hi]
+            params = [*(sg.tag for sg in sigs), start, end, *cparams]
         rows = self._query(sql, params)
         df = pd.DataFrame.from_records(rows, columns=["hour", "backfilled", "minutes"])
         if df.empty:

@@ -315,8 +315,7 @@ class Service:
         rows, meta = self.store.coverage(code)
         return {"column": code, "has_process_data": col.has_process_data, "meta": meta,
                 "hours": rows, "gaps": self._gaps_from_hours(rows, meta),
-                "basis": (col.by_role("pot_temp").label + f" (tag {col.by_role('pot_temp').tag})")
-                if col.by_role("pot_temp") else None}
+                "basis": "any instrument" if col.has_process_data else None}
 
     def scan_coverage(self, code: str, since: datetime | None = None) -> dict:
         """Ask the datalog for per-hour covered minutes. Scans from `since`, or
@@ -326,6 +325,10 @@ class Service:
         sig = col.by_role("pot_temp")
         if sig is None:
             return self.coverage(code)
+        # Logger health: any analog instrument of the column logging a
+        # plausible value. Status tags are left out (0 is a valid state, so
+        # they would count a frozen logger output as data).
+        logger_sigs = [s for s in col.signals if s.role != "status"]
         _, meta = self.store.coverage(code)
         lo, hi = self.db.extent(sig.tag)
         if lo is None:
@@ -339,12 +342,14 @@ class Service:
         cur = since
         while cur < stop:
             nxt = min(cur + timedelta(days=30), stop)
-            df = self.db.coverage_hourly(sig, cur, nxt)
+            df = self.db.coverage_hourly(logger_sigs, cur, nxt)
             rows = []
             if not df.empty:
                 piv = df.pivot_table(index="hour", columns="backfilled", values="minutes", aggfunc="sum").fillna(0)
                 for h, r in piv.iterrows():
-                    rows.append((h.strftime("%Y-%m-%d %H:00"), int(r.get(False, 0)), int(r.get(True, 0))))
+                    live = min(int(r.get(False, 0)), 60)
+                    # a minute with both live and backfilled rows counts once, as live
+                    rows.append((h.strftime("%Y-%m-%d %H:00"), live, min(int(r.get(True, 0)), 60 - live)))
             self.store.put_coverage(code, rows, cur.strftime("%Y-%m-%d %H:00"), nxt.strftime("%Y-%m-%d %H:00"))
             cur = nxt
         return self.coverage(code)

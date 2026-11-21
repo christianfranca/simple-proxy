@@ -573,7 +573,7 @@
         h("span", null, h("span", { class: "swatch", style: `background:${css("--color-cool")}` }), "live"),
         h("span", null, h("span", { class: "swatch", style: `background:${css("--ramp-4")}` }), "backfilled"),
         h("span", null, h("span", { class: "swatch", style: `background:${css("--color-bad")}` }), "no plausible data"))),
-      h("p", { class: "muted" }, "Minutes per hour holding at least one plausible pot-temp reading (dropouts excluded). Runs from Eflow sit under each strip; red runs are under 95% covered."));
+      h("p", { class: "muted" }, "Was the logger running? Minutes per hour in which any of the column's instruments logged a plausible value (dropouts excluded). The pot temp alone is not used: it reads 0 whenever the induction heater is off. Runs from Eflow sit under each strip; red runs are under 95% covered."));
     const unlogged = META.columns.filter((c) => !c.has_process_data);
     if (unlogged.length) main.append(h("section", { class: "panel unlogged" },
       unlogged.map((c) => c.label).join(", ") + ": no datalog tags, so no coverage to show. Eflow has " +
@@ -618,7 +618,7 @@
     const canvas = h("canvas", { class: "cov-canvas", role: "img", "aria-label": `${c.label} coverage strip` });
     const runCanvas = h("canvas", { class: "cov-runs", "aria-hidden": "true" });
     const readout = h("div", { class: "muted measured", style: "min-height:20px; padding: 0 16px" }, `${clockLabel(from)} to ${clockLabel(to)}, scanned ${when((cov.meta.computed_at || "").replace("T", " "))}`);
-    body.replaceChildren(h("div", { class: "cov-row" }, h("span", { class: "muted" }, "Pot temp"), h("div", null, canvas, runCanvas)), readout);
+    body.replaceChildren(h("div", { class: "cov-row" }, h("span", { class: "muted" }, "Logger"), h("div", null, canvas, runCanvas)), readout);
 
     // runs coverage from the hourly table
     const runCov = runs.runs.filter((r) => r.start && r.end).map((r) => {
